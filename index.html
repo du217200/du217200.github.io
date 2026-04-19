@@ -1,0 +1,284 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>到店打卡</title>
+  <script src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script>
+  <style>
+    body {
+      margin: 0;
+      font-family: "Microsoft JhengHei", Arial, sans-serif;
+      background: #f5f7fb;
+      color: #222;
+    }
+    .wrap {
+      max-width: 460px;
+      margin: 0 auto;
+      padding: 24px 16px 40px;
+    }
+    .card {
+      background: #fff;
+      border-radius: 18px;
+      padding: 20px;
+      box-shadow: 0 8px 24px rgba(0,0,0,.08);
+      margin-bottom: 16px;
+    }
+    .title {
+      font-size: 24px;
+      font-weight: bold;
+      margin-bottom: 8px;
+    }
+    .sub {
+      color: #666;
+      font-size: 14px;
+      margin-bottom: 16px;
+    }
+    .profile {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 16px;
+    }
+    .profile img {
+      width: 52px;
+      height: 52px;
+      border-radius: 50%;
+      object-fit: cover;
+      border: 1px solid #ddd;
+    }
+    .name {
+      font-size: 18px;
+      font-weight: bold;
+    }
+    .stat {
+      font-size: 16px;
+      margin: 10px 0;
+      padding: 10px 12px;
+      background: #f7f9fc;
+      border-radius: 12px;
+    }
+    .btn {
+      width: 100%;
+      border: none;
+      border-radius: 14px;
+      padding: 14px 16px;
+      font-size: 18px;
+      font-weight: bold;
+      cursor: pointer;
+      background: #06c755;
+      color: white;
+      margin-top: 12px;
+    }
+    .btn:disabled {
+      background: #b4b4b4;
+      cursor: not-allowed;
+    }
+    .msg {
+      margin-top: 14px;
+      padding: 12px;
+      border-radius: 12px;
+      font-size: 15px;
+      display: none;
+      white-space: pre-line;
+    }
+    .msg.ok {
+      display: block;
+      background: #eafaf0;
+      color: #137333;
+    }
+    .msg.err {
+      display: block;
+      background: #fdeeee;
+      color: #b42318;
+    }
+    .footer {
+      text-align: center;
+      color: #888;
+      font-size: 13px;
+      margin-top: 8px;
+    }
+    .small {
+      font-size: 13px;
+      color: #888;
+      margin-top: 6px;
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="card">
+      <div class="title">到店打卡</div>
+      <div class="sub">掃 QR Code 後，按一下按鈕即可記錄本次來店</div>
+
+      <div class="profile">
+        <img id="avatar" src="https://placehold.co/100x100?text=LINE" alt="avatar">
+        <div>
+          <div class="name" id="displayName">載入中...</div>
+          <div class="small" id="lineUserHint">正在連接 LINE 身分...</div>
+        </div>
+      </div>
+
+      <div class="stat">累積來店次數：<b id="totalVisits">-</b></div>
+      <div class="stat">今天是否已打卡：<b id="todayStatus">-</b></div>
+      <div class="stat">最後打卡時間：<b id="lastCheckin">-</b></div>
+
+      <button id="checkinBtn" class="btn" disabled>我要打卡</button>
+      <div id="msg" class="msg"></div>
+    </div>
+
+    <div class="footer">商家到店統計系統</div>
+  </div>
+
+<script>
+  // 你的 LINE LIFF ID
+  const LIFF_ID = "2009831503-eTClwjOa";
+
+  // 你的 Google Apps Script Web App URL
+  const API_URL = "https://script.google.com/macros/s/AKfycbxYhiWSAL9Ss6DoR58MJM0xcckOr1e0SHZzd63Ntk4eFq8DBCkxqz50fj14wiV4X4Yf/exec";
+
+  const currentState = {
+    ready: false,
+    lineUserId: "",
+    displayName: "",
+    pictureUrl: "",
+    stats: {
+      total_visits: 0,
+      checked_in_today: false,
+      last_checkin_at: ""
+    }
+  };
+
+  function showMessage(text, ok = true) {
+    const msg = document.getElementById("msg");
+    msg.className = "msg " + (ok ? "ok" : "err");
+    msg.textContent = text;
+  }
+
+  function setStats(stats) {
+    const totalVisits = Number(stats?.total_visits ?? 0);
+    const checkedInToday = !!stats?.checked_in_today;
+    const lastCheckinAt = stats?.last_checkin_at || "尚無紀錄";
+
+    currentState.stats = {
+      total_visits: totalVisits,
+      checked_in_today: checkedInToday,
+      last_checkin_at: lastCheckinAt
+    };
+
+    document.getElementById("totalVisits").textContent = totalVisits;
+    document.getElementById("todayStatus").textContent = checkedInToday ? "已打卡" : "尚未打卡";
+    document.getElementById("lastCheckin").textContent = lastCheckinAt;
+
+    const btn = document.getElementById("checkinBtn");
+    btn.disabled = checkedInToday;
+    btn.textContent = checkedInToday ? "今日已打卡" : "我要打卡";
+  }
+
+  async function fetchStatsFromSheet(lineUserId) {
+    const url = API_URL + "?action=stats&line_user_id=" + encodeURIComponent(lineUserId);
+    const res = await fetch(url);
+    const data = await res.json();
+
+    if (!data.ok) {
+      throw new Error(data.error || "讀取統計失敗");
+    }
+
+    return data.stats;
+  }
+
+  async function initPage() {
+    try {
+      if (!LIFF_ID || LIFF_ID.includes("請改成")) {
+        showMessage("LIFF_ID 尚未設定", false);
+        return;
+      }
+
+      if (!API_URL || API_URL.includes("請改成")) {
+        showMessage("API_URL 尚未設定", false);
+        return;
+      }
+
+      await liff.init({ liffId: LIFF_ID });
+
+      if (!liff.isLoggedIn()) {
+        liff.login();
+        return;
+      }
+
+      const profile = await liff.getProfile();
+
+      currentState.lineUserId = profile.userId;
+      currentState.displayName = profile.displayName || "LINE用戶";
+      currentState.pictureUrl = profile.pictureUrl || "";
+
+      document.getElementById("displayName").textContent = currentState.displayName;
+      document.getElementById("lineUserHint").textContent = "LINE 綁定成功";
+
+      if (currentState.pictureUrl) {
+        document.getElementById("avatar").src = currentState.pictureUrl;
+      }
+
+      const stats = await fetchStatsFromSheet(currentState.lineUserId);
+      setStats(stats);
+
+      currentState.ready = true;
+
+    } catch (err) {
+      console.error(err);
+      showMessage("初始化失敗：" + err.message, false);
+    }
+  }
+
+  document.getElementById("checkinBtn").addEventListener("click", async () => {
+    try {
+      if (!currentState.ready) {
+        showMessage("尚未完成登入初始化", false);
+        return;
+      }
+
+      const btn = document.getElementById("checkinBtn");
+      btn.disabled = true;
+      btn.textContent = "打卡中...";
+
+      const res = await fetch(API_URL, {
+        method: "POST",
+        headers: {
+          "Content-Type": "text/plain;charset=utf-8"
+        },
+        body: JSON.stringify({
+          action: "checkin",
+          line_user_id: currentState.lineUserId,
+          display_name: currentState.displayName,
+          picture_url: currentState.pictureUrl,
+          source: "liff"
+        })
+      });
+
+      const data = await res.json();
+      console.log("checkin result =", data);
+
+      if (!data.ok) {
+        showMessage(data.error || "打卡失敗", false);
+        btn.disabled = false;
+        btn.textContent = "我要打卡";
+        return;
+      }
+
+      setStats(data.stats);
+      showMessage(data.message || "打卡成功");
+
+    } catch (err) {
+      console.error(err);
+      showMessage("打卡失敗：" + err.message, false);
+
+      const btn = document.getElementById("checkinBtn");
+      btn.disabled = false;
+      btn.textContent = "我要打卡";
+    }
+  });
+
+  initPage();
+</script>
+</body>
+</html>
